@@ -1,7 +1,6 @@
 <div align="center">
   <img src="Logo.png" alt="Voice Flow Logo" width="120" />
   <h1>Voice Flow</h1>
-  <p><strong>A Product by Forge</strong></p>
   <p><em>Next-Generation Desktop Voice Dictation Assistant & Adaptive Speech Typist</em></p>
   
   [![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg)](LICENSE)
@@ -98,15 +97,7 @@ python create_shortcut.py
 ```
 This generates a desktop shortcut `Voice Flow.lnk` linked with `pythonw.exe` and the rounded 3D `voiceflow_app.ico` icon.
 
----
 
-## 🎨 Brand Identity
-
-Voice Flow is developed and maintained by **Forge**.
-
-- **Parent Company**: Forge Inc.
-- **Child Product**: Voice Flow
-- **Website**: Included in `Website/` directory (React 19 + Tailwind CSS + WebGL Plasma Shaders + Liquid Glass Navigation).
 
 ---
 
