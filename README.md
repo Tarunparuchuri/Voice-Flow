@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo_curved.png" alt="Voice Flow Logo" width="120" />
+  <img src="Logo_curved.png" alt="Voice Flow Logo" width="120" />
   <h1>Voice Flow</h1>
   <p><strong>A Product by Forge</strong></p>
   <p><em>Next-Generation Desktop Voice Dictation Assistant & Adaptive Speech Typist</em></p>
