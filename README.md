@@ -113,5 +113,3 @@ Voice Flow is developed and maintained by **Forge**.
 ## 📄 License
 
 This project is open-source and licensed under the **MIT License**.
-
-© 2026 **Forge Inc.** All rights reserved.
