@@ -30,8 +30,11 @@ A translucent, non-intrusive floating control capsule that sits gracefully on yo
 - **Smart Idle Transparency**: Automatically dims when inactive to avoid distracting your workflow.
 - **Quick Controls**: Instant buttons for Settings, Dictation History, and Theme Toggles.
 
-### 🧠 Adaptive Reinforcement Learning
-Voice Flow learns as you type! When you manually edit or correct transcribed text in your editor, Voice Flow’s background engine detects the delta and updates your local SQLite custom dictionary automatically.
+### 🧠 Q-Learning Reinforcement Learning Engine
+Voice Flow features a real **Q-Learning Contextual Bandit RL Engine** ($Q \leftarrow Q + \alpha [R + \gamma Q_{\max} - Q]$):
+- **Positive Rewards (+1.0)**: Accepted/kept dictations boost rule confidence Q-scores.
+- **Negative Penalties (-1.5)**: Overridden or undone replacements trigger negative rewards, suppressing low-confidence rules ($Q < 0.4$).
+- **Visual Q-Badges**: Monitor live rule confidence scores directly in the Settings Dictionary tab.
 
 ### ⚙️ Glassmorphic Settings Dashboard
 Modern luxury card-based control center:

@@ -941,6 +941,7 @@ class SettingsWindow(QMainWindow):
     def refresh_dictionary(self):
         self.dict_list.clear()
         entries = database.get_dictionary()
+        from rl_engine import RLEngine
         
         for e in entries:
             item = QListWidgetItem(self.dict_list)
@@ -949,6 +950,7 @@ class SettingsWindow(QMainWindow):
             card.setObjectName("dictCard")
             card_layout = QHBoxLayout(card)
             card_layout.setContentsMargins(10, 8, 10, 8)
+            card_layout.setSpacing(10)
             
             # Words representation (Clean rendering: hides phrase -> replacement mapping if they match case-insensitively)
             if e['phrase'] == e['replacement'].lower():
@@ -958,6 +960,13 @@ class SettingsWindow(QMainWindow):
             map_lbl.setObjectName("dictMappingText")
             card_layout.addWidget(map_lbl)
             card_layout.addStretch()
+            
+            # RL Q-Value Confidence Badge
+            q_val = e.get("q_value", 1.0)
+            badge_text, badge_color = RLEngine.get_confidence_label(q_val)
+            q_badge = QLabel(badge_text)
+            q_badge.setStyleSheet(f"background-color: rgba(0, 0, 0, 0.25); color: {badge_color}; border: 1px solid {badge_color}; border-radius: 8px; padding: 3px 10px; font-weight: bold; font-size: 8pt;")
+            card_layout.addWidget(q_badge)
             
             # Label marking how it was added
             badge = QLabel("Learned" if e["learned"] else "Manual")
@@ -1268,14 +1277,15 @@ class SettingsWindow(QMainWindow):
         box_layout.setContentsMargins(12, 12, 12, 12)
         box_layout.setSpacing(6)
         
-        info_title = QLabel("⚡ Reinforcement Learning System")
+        info_title = QLabel("🧠 Q-Learning Reinforcement Learning System")
         info_title.setFont(QFont("Segoe UI", 9.5, QFont.Bold))
         info_title.setStyleSheet(f"color: {ORANGE};")
         
         info_body = QLabel(
-            "Voice Flow automatically learns from your edits!\n\n"
-            "• Method 1: Edit any entry in the 'History' tab and click 'Save'. The new words and corrections will be automatically learned.\n"
-            "• Method 2: Copy your manual edits (Ctrl+C) within 15s of dictating text. Voice Flow compares the copy with the paste and registers the correction."
+            "Voice Flow runs an active Q-Learning Contextual Bandit RL engine!\n\n"
+            "• Positive Reward (+1.0): Granted when you keep or accept dictated text. Boosts Q-value.\n"
+            "• Negative Penalty (-1.5): Triggered when you edit or undo a replacement. Suppresses bad rules (Q < 0.4).\n"
+            "• Auto-Adaptation: Edits saved in History or copied (Ctrl+C) within 15s are fed into the RL policy network."
         )
         info_body.setWordWrap(True)
         info_body.setObjectName("infoBodyText")

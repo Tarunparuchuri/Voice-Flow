@@ -26,9 +26,25 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             phrase TEXT UNIQUE NOT NULL,
             replacement TEXT NOT NULL,
-            learned INTEGER DEFAULT 0
+            learned INTEGER DEFAULT 0,
+            q_value REAL DEFAULT 1.0,
+            reward_count INTEGER DEFAULT 0,
+            penalty_count INTEGER DEFAULT 0,
+            last_reward REAL DEFAULT 0.0
         )
     """)
+    
+    # Ensure RL columns exist for existing databases
+    cursor.execute("PRAGMA table_info(dictionary)")
+    existing_cols = [col[1] for col in cursor.fetchall()]
+    if "q_value" not in existing_cols:
+        cursor.execute("ALTER TABLE dictionary ADD COLUMN q_value REAL DEFAULT 1.0")
+    if "reward_count" not in existing_cols:
+        cursor.execute("ALTER TABLE dictionary ADD COLUMN reward_count INTEGER DEFAULT 0")
+    if "penalty_count" not in existing_cols:
+        cursor.execute("ALTER TABLE dictionary ADD COLUMN penalty_count INTEGER DEFAULT 0")
+    if "last_reward" not in existing_cols:
+        cursor.execute("ALTER TABLE dictionary ADD COLUMN last_reward REAL DEFAULT 0.0")
     
     # Create settings table
     cursor.execute("""
@@ -141,19 +157,31 @@ def delete_history_entry(entry_id):
     conn.close()
     return True
 
-def add_dictionary_entry(phrase, replacement, learned=0):
+def add_dictionary_entry(phrase, replacement, learned=0, q_value=None):
     phrase_clean = phrase.strip().lower()
     replacement_clean = replacement.strip()
     if not phrase_clean or not replacement_clean:
         return False
         
+    if q_value is None:
+        q_value = 0.8 if learned else 1.2
+
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
-        cursor.execute(
-            "INSERT OR REPLACE INTO dictionary (phrase, replacement, learned) VALUES (?, ?, ?)",
-            (phrase_clean, replacement_clean, learned)
-        )
+        # Check if entry already exists to preserve existing RL Q-value if updated
+        cursor.execute("SELECT q_value, reward_count, penalty_count FROM dictionary WHERE phrase = ?", (phrase_clean,))
+        existing = cursor.fetchone()
+        if existing:
+            cursor.execute(
+                "UPDATE dictionary SET replacement = ?, learned = ? WHERE phrase = ?",
+                (replacement_clean, learned, phrase_clean)
+            )
+        else:
+            cursor.execute(
+                "INSERT INTO dictionary (phrase, replacement, learned, q_value, reward_count, penalty_count, last_reward) VALUES (?, ?, ?, ?, 0, 0, 0.0)",
+                (phrase_clean, replacement_clean, learned, q_value)
+            )
         conn.commit()
         success = True
     except sqlite3.Error:
@@ -161,6 +189,36 @@ def add_dictionary_entry(phrase, replacement, learned=0):
     finally:
         conn.close()
     return success
+
+def update_rl_reward(phrase, reward):
+    phrase_clean = phrase.strip().lower()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT q_value, reward_count, penalty_count FROM dictionary WHERE phrase = ?", (phrase_clean,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return None
+        
+    current_q = row[0] if row[0] is not None else 1.0
+    reward_count = row[1] or 0
+    penalty_count = row[2] or 0
+    
+    from rl_engine import RLEngine
+    new_q = RLEngine.calculate_new_q_value(current_q, reward)
+    
+    if reward > 0:
+        reward_count += 1
+    else:
+        penalty_count += 1
+        
+    cursor.execute(
+        "UPDATE dictionary SET q_value = ?, reward_count = ?, penalty_count = ?, last_reward = ? WHERE phrase = ?",
+        (new_q, reward_count, penalty_count, reward, phrase_clean)
+    )
+    conn.commit()
+    conn.close()
+    return {"phrase": phrase_clean, "q_value": new_q, "reward_count": reward_count, "penalty_count": penalty_count}
 
 def delete_dictionary_entry(phrase):
     phrase = phrase.strip().lower()
@@ -173,10 +231,18 @@ def delete_dictionary_entry(phrase):
 def get_dictionary():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT phrase, replacement, learned FROM dictionary ORDER BY phrase ASC")
+    cursor.execute("SELECT phrase, replacement, learned, q_value, reward_count, penalty_count, last_reward FROM dictionary ORDER BY q_value DESC, phrase ASC")
     rows = cursor.fetchall()
     conn.close()
-    return [{"phrase": r[0], "replacement": r[1], "learned": bool(r[2])} for r in rows]
+    return [{
+        "phrase": r[0],
+        "replacement": r[1],
+        "learned": bool(r[2]),
+        "q_value": r[3] if r[3] is not None else 1.0,
+        "reward_count": r[4] or 0,
+        "penalty_count": r[5] or 0,
+        "last_reward": r[6] or 0.0,
+    } for r in rows]
 
 COMMON_WORDS = {
     # Numbers & Math
@@ -287,22 +353,23 @@ def learn_corrections(raw_text, corrected_text):
 
 def apply_dictionary(text):
     """
-    Applies learned and manual corrections to the input text.
+    Applies learned and manual corrections to the input text, filtered by RL Q-values.
     """
     if not text:
         return text
         
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT phrase, replacement FROM dictionary")
-    rules = cursor.fetchall()
+    # Filter rules by RL threshold (Q-value >= 0.4)
+    cursor.execute("SELECT phrase, replacement, q_value FROM dictionary WHERE q_value IS NULL OR q_value >= 0.4")
+    rows = cursor.fetchall()
     conn.close()
     
-    # 1. Apply exact phrase/word replacement rules from the dictionary
-    rules.sort(key=lambda x: len(x[0]), reverse=True)
+    # 1. Sort rules by Q-value (highest confidence first), then phrase length
+    rules = sorted(rows, key=lambda x: (x[2] if x[2] is not None else 1.0, len(x[0])), reverse=True)
     
     corrected_text = text
-    for phrase, replacement in rules:
+    for phrase, replacement, q_val in rules:
         pattern = rf'\b{re.escape(phrase)}\b'
         
         def replace_match(match):

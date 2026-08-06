@@ -160,15 +160,27 @@ class ClipboardCorrectionLearner(QObject):
             # Update history entry with corrected text
             success = database.update_history_entry(self.last_history_id, text)
             if success:
-                # Find the mappings that were learned
+                from rl_engine import RLEngine
+                # Find the mappings that were learned / corrected
                 mappings = database.learn_corrections(self.last_pasted_text, text)
                 if mappings:
                     for raw_phrase, corrected_phrase in mappings:
+                        # Process negative penalty for old phrase override and positive reward for new rule
+                        RLEngine.process_reward(raw_phrase, 'override')
+                        RLEngine.process_reward(corrected_phrase, 'accept')
                         self.correction_learned.emit(raw_phrase, corrected_phrase)
                 
                 # Reset monitoring state for this paste so we don't repeat-learn
                 self.last_pasted_text = None
                 self.last_history_id = None
+        elif ratio >= 0.98:
+            # User accepted past dictation without edits -> reward active terms
+            from rl_engine import RLEngine
+            words = text.split()
+            for w in words:
+                clean_w = database.strip_punctuation(w).lower()
+                if clean_w:
+                    RLEngine.process_reward(clean_w, 'accept')
 
 
 def paste_text(text):
