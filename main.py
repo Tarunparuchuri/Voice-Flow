@@ -4,6 +4,7 @@ import time
 from PySide6.QtCore import QObject, Signal, Slot, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 from PySide6.QtGui import QIcon, QAction
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 from pynput import keyboard as pynput_keyboard
 
@@ -12,6 +13,8 @@ import config
 from recorder import RecorderThread
 from transcriber import TranscriberThread, ClipboardCorrectionLearner, paste_text
 from widgets import CapsuleWidget, SettingsWindow
+
+SINGLE_INSTANCE_IPC_KEY = "VoiceFlow_SingleInstance_IPC_Server_v1"
 
 
 class GlobalHotkeyListener(QObject):
@@ -104,12 +107,45 @@ class VoiceFlowApp(QObject):
         # System Tray Integration
         self.setup_tray()
 
+        # Single Instance IPC Server setup
+        self.server = QLocalServer(self)
+        QLocalServer.removeServer(SINGLE_INSTANCE_IPC_KEY)
+        if self.server.listen(SINGLE_INSTANCE_IPC_KEY):
+            self.server.newConnection.connect(self.on_single_instance_activated)
+
         # Show UI elements on startup
         self.capsule.show()
         self.settings_window.show()
 
         # Connect theme changes to keep UI components synchronized
         self.settings_window.theme_changed.connect(self.on_theme_changed)
+
+    def on_single_instance_activated(self):
+        client = self.server.nextPendingConnection()
+        if client:
+            client.readyRead.connect(lambda: self.handle_ipc_message(client))
+
+    def handle_ipc_message(self, client):
+        try:
+            msg = client.readAll().data().decode("utf-8")
+            if "ACTIVATE" in msg:
+                self.show_and_raise()
+        except Exception:
+            pass
+        finally:
+            client.disconnectFromServer()
+
+    def show_and_raise(self):
+        print("[Voice Flow] Activation signal received. Bringing pill capsule and settings window to front.")
+        if hasattr(self, 'capsule'):
+            self.capsule.show()
+            self.capsule.set_state("idle")
+            self.capsule.raise_()
+            self.capsule.activateWindow()
+        if hasattr(self, 'settings_window'):
+            self.settings_window.show()
+            self.settings_window.raise_()
+            self.settings_window.activateWindow()
 
     def setup_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -254,6 +290,18 @@ def main():
     # Fix High DPI scaling issues on Windows
     os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
     app = QApplication(sys.argv)
+
+    # --- Single Instance Enforcement ---
+    # Check if an instance of Voice Flow is already running
+    socket = QLocalSocket()
+    socket.connectToServer(SINGLE_INSTANCE_IPC_KEY)
+    if socket.waitForConnected(500):
+        # Already running! Send activation signal to raise existing capsule and exit
+        socket.write(b"ACTIVATE")
+        socket.waitForBytesWritten(1000)
+        socket.disconnectFromServer()
+        print("[Voice Flow] Instance already running. Brought existing capsule to front.")
+        sys.exit(0)
     
     # Set application-wide icon for taskbar with curved edges
     if os.path.exists(config.LOGO_PATH):

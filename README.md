@@ -28,6 +28,7 @@ Press and hold `Ctrl + Win` from anywhere on your PC to record speech and automa
 A translucent, non-intrusive floating control capsule that sits gracefully on your screen. Features:
 - **Liquid Audio Soundwave**: Live 64-bar soundwave visualizer responding dynamically to your voice.
 - **Smart Idle Transparency**: Automatically dims when inactive to avoid distracting your workflow.
+- **Single-Instance Protection**: Enforces a single active capsule process (`QLocalServer` IPC lock). Re-opening the app instantly brings the existing capsule to focus.
 - **Quick Controls**: Instant buttons for Settings, Dictation History, and Theme Toggles.
 
 ### 🧠 Q-Learning Reinforcement Learning Engine
