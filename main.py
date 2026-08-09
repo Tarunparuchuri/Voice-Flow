@@ -15,6 +15,8 @@ from transcriber import TranscriberThread, ClipboardCorrectionLearner, paste_tex
 from widgets import CapsuleWidget, SettingsWindow
 
 SINGLE_INSTANCE_IPC_KEY = "VoiceFlow_SingleInstance_IPC_Server_v1"
+MUTEX_NAME = "Global\\VoiceFlow_SingleInstance_Mutex_v1"
+_global_mutex_handle = None
 
 
 class GlobalHotkeyListener(QObject):
@@ -278,6 +280,34 @@ class VoiceFlowApp(QObject):
 
 
 def main():
+    global _global_mutex_handle
+
+    # --- Atomic Win32 Kernel Mutex Check ---
+    # Prevents race conditions when double-clicking rapidly
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            _global_mutex_handle = kernel32.CreateMutexW(None, True, MUTEX_NAME)
+            last_error = kernel32.GetLastError()
+            ERROR_ALREADY_EXISTS = 183
+
+            if last_error == ERROR_ALREADY_EXISTS:
+                print("[Voice Flow] Instance already running (Win32 Mutex locked). Sending IPC activation...")
+                try:
+                    app_temp = QApplication.instance() or QApplication(sys.argv)
+                    socket = QLocalSocket()
+                    socket.connectToServer(SINGLE_INSTANCE_IPC_KEY)
+                    if socket.waitForConnected(800):
+                        socket.write(b"ACTIVATE")
+                        socket.waitForBytesWritten(1000)
+                        socket.disconnectFromServer()
+                except Exception as e:
+                    print(f"[Voice Flow] IPC notify error: {e}")
+                sys.exit(0)
+        except Exception as e:
+            print(f"[Voice Flow] Mutex check error: {e}")
+
     # Register Windows AppUserModelID so Windows Taskbar displays custom Voice Flow logo instead of python.exe icon
     if sys.platform == "win32":
         try:
@@ -291,12 +321,10 @@ def main():
     os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
     app = QApplication(sys.argv)
 
-    # --- Single Instance Enforcement ---
-    # Check if an instance of Voice Flow is already running
+    # --- IPC Single Instance Backup Check ---
     socket = QLocalSocket()
     socket.connectToServer(SINGLE_INSTANCE_IPC_KEY)
-    if socket.waitForConnected(500):
-        # Already running! Send activation signal to raise existing capsule and exit
+    if socket.waitForConnected(300):
         socket.write(b"ACTIVATE")
         socket.waitForBytesWritten(1000)
         socket.disconnectFromServer()
