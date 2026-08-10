@@ -73,6 +73,102 @@ def format_text(text):
             
     return text
 
+class ChunkTranscriberWorker(QThread):
+    chunk_finished = Signal(int, str)  # Emits (chunk_index, text)
+    chunk_error = Signal(int, str)     # Emits (chunk_index, error_msg)
+
+    def __init__(self, chunk_index, wav_path):
+        super().__init__()
+        self.chunk_index = chunk_index
+        self.wav_path = wav_path
+
+    def run(self):
+        if not self.wav_path or not os.path.exists(self.wav_path):
+            self.chunk_finished.emit(self.chunk_index, "")
+            return
+
+        recognizer = sr.Recognizer()
+        try:
+            with sr.AudioFile(self.wav_path) as source:
+                audio_data = recognizer.record(source)
+
+            # Transcribe using Google's Web Speech API
+            text = recognizer.recognize_google(audio_data)
+            self.chunk_finished.emit(self.chunk_index, text.strip())
+        except sr.UnknownValueError:
+            self.chunk_finished.emit(self.chunk_index, "")
+        except Exception as e:
+            self.chunk_error.emit(self.chunk_index, str(e))
+        finally:
+            try:
+                if os.path.exists(self.wav_path):
+                    os.remove(self.wav_path)
+            except Exception:
+                pass
+
+
+class StreamingTranscriberManager(QObject):
+    finished = Signal(str, str)  # Emits (formatted_raw, corrected_text)
+    error = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.reset()
+
+    def reset(self):
+        self.partial_results = {}
+        self.expected_final_index = None
+        self.workers = []
+        self.is_flushing = False
+
+    def add_chunk(self, chunk_index, wav_path):
+        worker = ChunkTranscriberWorker(chunk_index, wav_path)
+        worker.chunk_finished.connect(self._on_chunk_finished)
+        worker.chunk_error.connect(self._on_chunk_error)
+        self.workers.append(worker)
+        worker.start()
+
+    def set_final_chunk(self, final_index, wav_path):
+        self.is_flushing = True
+        if wav_path and os.path.exists(wav_path):
+            self.expected_final_index = final_index
+            self.add_chunk(final_index, wav_path)
+        else:
+            self.expected_final_index = max(0, final_index - 1) if final_index > 0 else 0
+            self._check_completion()
+
+    def _on_chunk_finished(self, chunk_index, text):
+        self.partial_results[chunk_index] = text
+        self._check_completion()
+
+    def _on_chunk_error(self, chunk_index, error_msg):
+        self.partial_results[chunk_index] = ""
+        self._check_completion()
+
+    def _check_completion(self):
+        if not self.is_flushing or self.expected_final_index is None:
+            return
+
+        # Check if all chunks from 0 to expected_final_index are completed
+        all_ready = all(i in self.partial_results for i in range(self.expected_final_index + 1))
+        if all_ready:
+            parts = [self.partial_results[i] for i in range(self.expected_final_index + 1) if self.partial_results.get(i)]
+            combined_text = " ".join(parts).strip()
+            
+            if not combined_text:
+                self.error.emit("Speech could not be understood.")
+                return
+
+            # Format raw text (voice commands, capitalization, punctuation)
+            formatted_raw = format_text(combined_text)
+            
+            # Apply RL dictionary corrections
+            corrected_text = database.apply_dictionary(formatted_raw)
+            
+            self.finished.emit(formatted_raw, corrected_text)
+            self.reset()
+
+
 class TranscriberThread(QThread):
     finished = Signal(str, str)  # Emits (raw_text, corrected_text)
     error = Signal(str)

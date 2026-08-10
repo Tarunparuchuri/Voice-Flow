@@ -21,8 +21,8 @@ Featuring a fluid **floating glass capsule UI**, low-latency local speech recogn
 
 ## ✨ Key Features
 
-### 🎙️ Global PC Dictation (`Ctrl + Win`)
-Press and hold `Ctrl + Win` from anywhere on your PC to record speech and automatically inject dictated text into **VS Code, Microsoft Word, Notion, Slack, Discord, or any browser tab** without switching windows.
+### 🎙️ Global PC Dictation & Real-Time Background Streaming (`Ctrl + Win`)
+Press and hold `Ctrl + Win` from anywhere on your PC to record speech. Audio chunks are streamed and transcribed in real time in the background **while you are still speaking**, ensuring instant text injection into **VS Code, Microsoft Word, Notion, Slack, Discord, or any browser tab** as soon as you release the hotkey.
 
 ### 🔮 Floating Glass Capsule UI
 A translucent, non-intrusive floating control capsule that sits gracefully on your screen. Features:

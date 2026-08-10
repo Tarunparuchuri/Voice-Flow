@@ -11,7 +11,7 @@ from pynput import keyboard as pynput_keyboard
 import database
 import config
 from recorder import RecorderThread
-from transcriber import TranscriberThread, ClipboardCorrectionLearner, paste_text
+from transcriber import TranscriberThread, ClipboardCorrectionLearner, paste_text, StreamingTranscriberManager
 from widgets import CapsuleWidget, SettingsWindow
 
 SINGLE_INSTANCE_IPC_KEY = "VoiceFlow_SingleInstance_IPC_Server_v1"
@@ -94,6 +94,11 @@ class VoiceFlowApp(QObject):
         # Thread containers
         self.recorder_thread = None
         self.transcriber_thread = None
+
+        # Instantiate Live Real-Time Streaming Transcription Manager
+        self.streaming_manager = StreamingTranscriberManager()
+        self.streaming_manager.finished.connect(self.on_transcription_finished)
+        self.streaming_manager.error.connect(self.on_transcription_error)
 
         # Instantiate & configure reinforcement learning engine
         self.learner = ClipboardCorrectionLearner()
@@ -200,35 +205,38 @@ class VoiceFlowApp(QObject):
         if self.capsule.state != "idle":
             return
             
-        print("Starting recording...")
+        print("Starting live recording & streaming background transcription...")
         self.capsule.set_state("recording")
 
-        # Setup recording thread
+        # Reset streaming transcription manager
+        self.streaming_manager.reset()
+
+        # Setup recording thread with live chunk signals
         self.recorder_thread = RecorderThread()
         self.recorder_thread.audio_level.connect(self.capsule.update_audio_level)
-        self.recorder_thread.recording_finished.connect(self.on_recording_finished)
+        self.recorder_thread.chunk_recorded.connect(self.on_chunk_recorded)
+        self.recorder_thread.final_chunk_recorded.connect(self.on_final_chunk_recorded)
         self.recorder_thread.recording_error.connect(self.on_recording_error)
         self.recorder_thread.start()
+
+    @Slot(int, str)
+    def on_chunk_recorded(self, index, chunk_path):
+        print(f"[Streaming] Audio chunk #{index} recorded live -> Dispatching background transcription...")
+        self.streaming_manager.add_chunk(index, chunk_path)
+
+    @Slot(int, str)
+    def on_final_chunk_recorded(self, index, chunk_path):
+        print(f"[Streaming] Final audio chunk #{index} recorded -> Flushing transcription...")
+        self.streaming_manager.set_final_chunk(index, chunk_path)
 
     @Slot()
     def on_stop_recording(self):
         if self.capsule.state != "recording" or not self.recorder_thread:
             return
 
-        print("Stopping recording...")
-        self.capsule.set_state("transcribing", "Processing...")
-        self.recorder_thread.stop()
-
-    @Slot(str)
-    def on_recording_finished(self, wav_path):
-        print(f"Recording saved, initiating transcription on {wav_path}...")
+        print("Key released! Stopping recorder & completing remaining audio transcription...")
         self.capsule.set_state("transcribing", "Transcribing...")
-        
-        # Setup transcription worker thread
-        self.transcriber_thread = TranscriberThread(wav_path)
-        self.transcriber_thread.finished.connect(self.on_transcription_finished)
-        self.transcriber_thread.error.connect(self.on_transcription_error)
-        self.transcriber_thread.start()
+        self.recorder_thread.stop()
 
     @Slot(str)
     def on_recording_error(self, error_msg):
