@@ -49,9 +49,10 @@ def reload_whisper_model():
     return _load_whisper_model()
 
 
-def transcribe_with_whisper(wav_path, initial_prompt=None):
+def transcribe_with_whisper(audio_data, initial_prompt=None):
     """
-    Transcribe a WAV file using faster-whisper.
+    Transcribe audio using faster-whisper.
+    audio_data can be a wav file path OR a 1D np.ndarray float32.
     Returns transcribed text string, or None if Whisper is unavailable.
     """
     model = _load_whisper_model()
@@ -60,10 +61,11 @@ def transcribe_with_whisper(wav_path, initial_prompt=None):
 
     try:
         segments, info = model.transcribe(
-            wav_path,
+            audio_data,
             beam_size=config.WHISPER_BEAM_SIZE,
             language=config.WHISPER_LANGUAGE,
             vad_filter=config.WHISPER_VAD_FILTER,
+            vad_parameters=dict(min_silence_duration_ms=500) if config.WHISPER_VAD_FILTER else None,
             initial_prompt=initial_prompt,
             word_timestamps=False,
             condition_on_previous_text=True
@@ -167,159 +169,83 @@ def format_text(text):
     return text
 
 
-# ─── Chunk Transcriber Worker ────────────────────────────────────────────
+# ─── Live Streaming Transcriber Worker ────────────────────────────────────
 
-class ChunkTranscriberWorker(QThread):
-    chunk_finished = Signal(int, str)  # Emits (chunk_index, text)
-    chunk_error = Signal(int, str)     # Emits (chunk_index, error_msg)
-
-    def __init__(self, chunk_index, wav_path, initial_prompt=None):
-        super().__init__()
-        self.chunk_index = chunk_index
-        self.wav_path = wav_path
-        self.initial_prompt = initial_prompt
-
-    def run(self):
-        if not self.wav_path or not os.path.exists(self.wav_path):
-            self.chunk_finished.emit(self.chunk_index, "")
-            return
-
-        try:
-            # Try Whisper first (primary engine)
-            text = transcribe_with_whisper(self.wav_path, initial_prompt=self.initial_prompt)
-            
-            if text is None:
-                # Fallback to Google Web Speech API
-                try:
-                    text = transcribe_with_google(self.wav_path)
-                except Exception:
-                    text = ""
-
-            self.chunk_finished.emit(self.chunk_index, text.strip() if text else "")
-        except Exception as e:
-            self.chunk_error.emit(self.chunk_index, str(e))
-        finally:
-            try:
-                if os.path.exists(self.wav_path):
-                    os.remove(self.wav_path)
-            except Exception:
-                pass
-
-
-# ─── Streaming Transcriber Manager ──────────────────────────────────────
-
-class StreamingTranscriberManager(QObject):
-    finished = Signal(str, str)  # Emits (formatted_raw, corrected_text)
+class LiveTranscriptionWorker(QThread):
+    partial_result = Signal(str)         # Emits raw text as it updates live
+    final_result = Signal(str, str)      # Emits (formatted_raw, corrected_text)
     error = Signal(str)
 
     def __init__(self):
         super().__init__()
-        self.reset()
-
-    def reset(self):
-        self.partial_results = {}
-        self.expected_final_index = None
-        self.workers = []
-        self.is_flushing = False
-        self._last_prompt = None  # Context passing: text from previous chunk
-
-    def add_chunk(self, chunk_index, wav_path):
-        """Dispatch a background transcription worker for this audio chunk."""
-        # Pass the last completed chunk's text as initial_prompt for context
-        worker = ChunkTranscriberWorker(chunk_index, wav_path, initial_prompt=self._last_prompt)
-        worker.chunk_finished.connect(self._on_chunk_finished)
-        worker.chunk_error.connect(self._on_chunk_error)
-        self.workers.append(worker)
-        worker.start()
-
-    def set_final_chunk(self, final_index, wav_path):
-        self.is_flushing = True
-        if wav_path and os.path.exists(wav_path):
-            self.expected_final_index = final_index
-            self.add_chunk(final_index, wav_path)
-        else:
-            self.expected_final_index = max(0, final_index - 1) if final_index > 0 else 0
-            self._check_completion()
-
-    def _on_chunk_finished(self, chunk_index, text):
-        self.partial_results[chunk_index] = text
-        # Update context for next chunk (streaming context passing)
-        if text:
-            self._last_prompt = text
-        self._check_completion()
-
-    def _on_chunk_error(self, chunk_index, error_msg):
-        self.partial_results[chunk_index] = ""
-        self._check_completion()
-
-    def _check_completion(self):
-        if not self.is_flushing or self.expected_final_index is None:
-            return
-
-        # Check if all chunks from 0 to expected_final_index are completed
-        all_ready = all(i in self.partial_results for i in range(self.expected_final_index + 1))
-        if all_ready:
-            parts = [self.partial_results[i] for i in range(self.expected_final_index + 1) if self.partial_results.get(i)]
-            combined_text = " ".join(parts).strip()
-            
-            if not combined_text:
-                self.error.emit("Speech could not be understood.")
-                return
-
-            # Format raw text (voice commands, capitalization, punctuation)
-            formatted_raw = format_text(combined_text)
-            
-            # Apply RL dictionary corrections
-            corrected_text = database.apply_dictionary(formatted_raw)
-            
-            self.finished.emit(formatted_raw, corrected_text)
-            self.reset()
-
-
-# ─── Legacy Single-File Transcriber (backward compatibility) ─────────────
-
-class TranscriberThread(QThread):
-    finished = Signal(str, str)  # Emits (raw_text, corrected_text)
-    error = Signal(str)
-
-    def __init__(self, wav_path):
-        super().__init__()
-        self.wav_path = wav_path
+        self.audio_buffer = None
+        self.is_running = False
+        self.is_final = False
+        self.lock = threading.Lock()
+        self.condition = threading.Condition(self.lock)
+        
+    def update_audio(self, audio_np, is_final=False):
+        """Called from the main thread when recorder emits new audio numpy array."""
+        with self.condition:
+            self.audio_buffer = audio_np
+            if is_final:
+                self.is_final = True
+            self.condition.notify()
 
     def run(self):
-        if not os.path.exists(self.wav_path):
-            self.error.emit("Audio file not found")
-            return
+        self.is_running = True
+        self.is_final = False
+        self.audio_buffer = None
+        
+        while self.is_running:
+            with self.condition:
+                # Wait for audio to be available or to be stopped
+                while self.audio_buffer is None and self.is_running and not self.is_final:
+                    self.condition.wait()
+                
+                if not self.is_running:
+                    break
+                    
+                current_audio = self.audio_buffer
+                is_final_run = self.is_final
+                self.audio_buffer = None # Clear so we wait for next update
 
-        try:
-            # Try Whisper first
-            raw_text = transcribe_with_whisper(self.wav_path)
-            
-            if raw_text is None:
-                # Fallback to Google Web Speech API
-                raw_text = transcribe_with_google(self.wav_path)
-            
-            # Format raw text
-            formatted_raw = format_text(raw_text)
-            
-            # Apply learned corrections from dictionary
-            corrected_text = database.apply_dictionary(formatted_raw)
-            
-            self.finished.emit(formatted_raw, corrected_text)
-        except Exception as e:
-            error_msg = str(e)
-            if "UnknownValueError" in error_msg or "could not understand" in error_msg.lower():
+            if current_audio is not None and len(current_audio) > 0:
+                try:
+                    # Run inference on the full context accumulated so far
+                    text = transcribe_with_whisper(current_audio)
+                    
+                    if text:
+                        if is_final_run:
+                            formatted_raw = format_text(text)
+                            corrected_text = database.apply_dictionary(formatted_raw)
+                            self.final_result.emit(formatted_raw, corrected_text)
+                            break
+                        else:
+                            self.partial_result.emit(text)
+                    elif is_final_run:
+                        # Fallback to Google API if whisper failed to output anything on final
+                        try:
+                            # We can't pass np.ndarray directly to Google fallback. 
+                            # If needed, we could encode back to wav, but Google fallback is obsolete.
+                            # Just emit error if Whisper is totally blank.
+                            self.error.emit("Speech could not be understood.")
+                        except Exception:
+                            self.error.emit("Speech could not be understood.")
+                        break
+                except Exception as e:
+                    if is_final_run:
+                        self.error.emit(str(e))
+                        break
+            elif is_final_run:
                 self.error.emit("Speech could not be understood.")
-            elif "RequestError" in error_msg:
-                self.error.emit(f"Transcription service error: {e}")
-            else:
-                self.error.emit(f"Transcription error: {error_msg}")
-        finally:
-            try:
-                if os.path.exists(self.wav_path):
-                    os.remove(self.wav_path)
-            except Exception:
-                pass
+                break
+
+    def stop(self):
+        with self.condition:
+            self.is_running = False
+            self.condition.notify()
+        self.wait()
 
 
 # ─── Clipboard Correction Learner ────────────────────────────────────────
@@ -396,20 +322,15 @@ class ClipboardCorrectionLearner(QObject):
 def paste_text(text):
     """
     Pastes text into the active window using atomic clipboard paste (Ctrl+V).
-    
-    Instead of slow character-by-character keyboard.write(), this:
-    1. Saves the user's current clipboard content
-    2. Sets clipboard to the transcribed text
-    3. Simulates Ctrl+V for instant paste
-    4. Restores the original clipboard content after a delay
+    Leaves the transcribed text in the clipboard so the user can paste it again.
     """
     clipboard = QApplication.clipboard()
     
-    # Save original clipboard content for restoration
-    original_clipboard = clipboard.text()
-    
     # Set transcribed text to clipboard
     clipboard.setText(text)
+    
+    # Process events to ensure Qt flushes the clipboard to the OS
+    QApplication.processEvents()
     
     # Release modifier keys virtually to prevent OS keyboard state conflicts
     for m in ['ctrl', 'win', 'alt', 'shift', 'left ctrl', 'left windows', 'right ctrl', 'right windows']:
@@ -423,10 +344,3 @@ def paste_text(text):
     
     # Simulate Ctrl+V for instant atomic paste
     keyboard.send('ctrl+v')
-    
-    # Wait for paste to complete, then restore original clipboard
-    time.sleep(0.25)
-    try:
-        clipboard.setText(original_clipboard)
-    except Exception:
-        pass
