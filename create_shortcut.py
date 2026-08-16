@@ -31,7 +31,8 @@ def create_desktop_shortcut():
     # 2. Create/Update Windows Desktop Shortcut (.lnk) using PowerShell WScript.Shell
     ps_script = f"""
     $WshShell = New-Object -ComObject WScript.Shell
-    $Shortcut = $WshShell.CreateShortcut('{shortcut_path}')
+    $DesktopPath = [Environment]::GetFolderPath("Desktop")
+    $Shortcut = $WshShell.CreateShortcut("$DesktopPath\\Voice Flow.lnk")
     $Shortcut.TargetPath = '{pythonw_path}'
     $Shortcut.Arguments = '"{main_py_path}"'
     $Shortcut.WorkingDirectory = '{project_dir}'
