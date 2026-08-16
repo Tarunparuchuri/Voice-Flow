@@ -133,8 +133,14 @@ class RecorderThread(QThread):
                             chunk_data = bytes(self.current_chunk_bytes[:boundary])
                             self.current_chunk_bytes = self.current_chunk_bytes[boundary:]
                             
-                            # Preprocess audio before saving chunk
-                            processed_data = process_audio(chunk_data)
+                            # Preprocess audio before saving chunk (only noise gate, disable AGC/high-pass/pre-emphasis for Whisper)
+                            processed_data = process_audio(
+                                chunk_data, 
+                                enable_agc=False, 
+                                enable_high_pass=False, 
+                                enable_noise_gate=True, 
+                                enable_pre_emphasis=False
+                            )
                             
                             chunk_path = self._save_chunk_wav(self.chunk_index, processed_data)
                             self.chunk_recorded.emit(self.chunk_index, chunk_path)
@@ -145,7 +151,13 @@ class RecorderThread(QThread):
                         chunk_data = bytes(self.current_chunk_bytes[:self.MAX_CHUNK_BYTES])
                         self.current_chunk_bytes = self.current_chunk_bytes[self.MAX_CHUNK_BYTES:]
                         
-                        processed_data = process_audio(chunk_data)
+                        processed_data = process_audio(
+                            chunk_data, 
+                            enable_agc=False, 
+                            enable_high_pass=False, 
+                            enable_noise_gate=True, 
+                            enable_pre_emphasis=False
+                        )
                         
                         chunk_path = self._save_chunk_wav(self.chunk_index, processed_data)
                         self.chunk_recorded.emit(self.chunk_index, chunk_path)
@@ -170,7 +182,13 @@ class RecorderThread(QThread):
                 final_data = bytes(self.current_chunk_bytes)
                 # Only preprocess if we have meaningful audio (>= 100ms)
                 if len(final_data) >= self.SAMPLERATE * self.BYTES_PER_SAMPLE // 10:
-                    final_data = process_audio(final_data)
+                    final_data = process_audio(
+                        final_data, 
+                        enable_agc=False, 
+                        enable_high_pass=False, 
+                        enable_noise_gate=True, 
+                        enable_pre_emphasis=False
+                    )
                 final_path = self._save_chunk_wav(self.chunk_index, final_data)
                 self.final_chunk_recorded.emit(self.chunk_index, final_path)
             elif self.chunk_index == 0 and not self.all_audio_chunks:
