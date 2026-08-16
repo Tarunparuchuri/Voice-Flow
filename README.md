@@ -44,6 +44,13 @@ Modern luxury card-based control center:
 - **Custom Hotkey Binder**: Bind your preferred global dictation trigger keys.
 - **Dictionary Management**: View, add, edit, or remove custom phrase replacements and jargon.
 
+### 🎛️ Studio-Grade Audio Preprocessing
+Voice Flow incorporates a built-in DSP pipeline to ensure crystal-clear voice capture before it even reaches the AI:
+- **Automatic Gain Control (AGC)**: Normalizes quiet and loud speakers to a consistent target volume.
+- **Dynamic Noise Gate**: Mutes background hums and room noise below specific dB thresholds.
+- **High-Pass Filter**: Cuts low-frequency rumbling (HVAC, desk bumps).
+- **VAD-Aware Smart Chunking**: Identifies natural pauses in speech to send optimally sized audio chunks to the AI without cutting words in half.
+
 ### 🛡️ 100% Local-First Privacy
 Your audio recordings and custom dictionary database remain strictly on your local computer. No cloud transfers, zero tracking, total privacy.
 

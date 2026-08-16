@@ -1,12 +1,93 @@
-import speech_recognition as sr
 import os
-import time
-import difflib
 import re
+import time
+import wave
+import difflib
+import threading
 from PySide6.QtCore import QThread, Signal, QObject
 from PySide6.QtWidgets import QApplication
 import keyboard
 import database
+import config
+
+# ─── Whisper Engine (Singleton) ──────────────────────────────────────────
+_whisper_model = None
+_whisper_lock = threading.Lock()
+_whisper_available = False
+
+
+def _load_whisper_model():
+    """Lazily load the faster-whisper model. Thread-safe singleton."""
+    global _whisper_model, _whisper_available
+    with _whisper_lock:
+        if _whisper_model is not None:
+            return _whisper_model
+        try:
+            from faster_whisper import WhisperModel
+            model_size = database.get_setting("whisper_model", config.WHISPER_MODEL)
+            print(f"[Whisper] Loading model '{model_size}' on {config.WHISPER_DEVICE} ({config.WHISPER_COMPUTE_TYPE})...")
+            _whisper_model = WhisperModel(
+                model_size,
+                device=config.WHISPER_DEVICE,
+                compute_type=config.WHISPER_COMPUTE_TYPE
+            )
+            _whisper_available = True
+            print(f"[Whisper] Model '{model_size}' loaded successfully.")
+            return _whisper_model
+        except Exception as e:
+            print(f"[Whisper] Failed to load model: {e}. Falling back to Google Web Speech API.")
+            _whisper_available = False
+            return None
+
+
+def reload_whisper_model():
+    """Force-reload the Whisper model (e.g., after user changes model size in Settings)."""
+    global _whisper_model, _whisper_available
+    with _whisper_lock:
+        _whisper_model = None
+        _whisper_available = False
+    return _load_whisper_model()
+
+
+def transcribe_with_whisper(wav_path, initial_prompt=None):
+    """
+    Transcribe a WAV file using faster-whisper.
+    Returns transcribed text string, or None if Whisper is unavailable.
+    """
+    model = _load_whisper_model()
+    if model is None:
+        return None
+
+    try:
+        segments, info = model.transcribe(
+            wav_path,
+            beam_size=config.WHISPER_BEAM_SIZE,
+            language=config.WHISPER_LANGUAGE,
+            vad_filter=config.WHISPER_VAD_FILTER,
+            initial_prompt=initial_prompt,
+            word_timestamps=False,
+            condition_on_previous_text=True
+        )
+        text = " ".join(segment.text.strip() for segment in segments).strip()
+        return text if text else None
+    except Exception as e:
+        print(f"[Whisper] Transcription error: {e}")
+        return None
+
+
+def transcribe_with_google(wav_path):
+    """
+    Fallback transcription using Google Web Speech API.
+    Returns transcribed text string, or raises on error.
+    """
+    import speech_recognition as sr
+    recognizer = sr.Recognizer()
+    with sr.AudioFile(wav_path) as source:
+        audio_data = recognizer.record(source)
+    return recognizer.recognize_google(audio_data)
+
+
+# ─── Voice Commands ─────────────────────────────────────────────────────
 
 def process_voice_commands(text):
     if not text:
@@ -33,7 +114,14 @@ def process_voice_commands(text):
             
     return " ".join(words)
 
+
 def format_text(text):
+    """
+    Post-process transcribed text. When Whisper is active, it already provides
+    proper punctuation and capitalization, so this is a lightweight pass-through
+    that only handles voice commands and the standalone 'I' rule.
+    For Google fallback, applies full formatting.
+    """
     if not text:
         return text
         
@@ -45,18 +133,23 @@ def format_text(text):
     text = process_voice_commands(text)
     if not text:
         return text
-        
-    # 2. Capitalize first letter
-    text = text[0].upper() + text[1:]
-    
-    # 3. Capitalize standalone 'i'
+
+    # 2. Capitalize standalone 'i' -> 'I'
     text = re.sub(r'\bi\b', 'I', text)
+
+    if _whisper_available:
+        # Whisper provides native punctuation and capitalization.
+        # Just ensure first letter is capitalized (Whisper occasionally lowercases it).
+        text = text[0].upper() + text[1:] if len(text) > 1 else text.upper()
+        return text
+
+    # ── Google fallback: full formatting ──
+    # Capitalize first letter
+    text = text[0].upper() + text[1:] if len(text) > 1 else text.upper()
     
-    # 4. Add punctuation if not present at the end
+    # Add punctuation if not present at the end
     if text[-1] not in ('.', '?', '!'):
-        # Check if the first word is a question word
         first_word = text.split()[0].lower()
-        # strip punctuation from the first word
         first_word = re.sub(r'[^\w]', '', first_word)
         
         question_words = {
@@ -73,30 +166,36 @@ def format_text(text):
             
     return text
 
+
+# ─── Chunk Transcriber Worker ────────────────────────────────────────────
+
 class ChunkTranscriberWorker(QThread):
     chunk_finished = Signal(int, str)  # Emits (chunk_index, text)
     chunk_error = Signal(int, str)     # Emits (chunk_index, error_msg)
 
-    def __init__(self, chunk_index, wav_path):
+    def __init__(self, chunk_index, wav_path, initial_prompt=None):
         super().__init__()
         self.chunk_index = chunk_index
         self.wav_path = wav_path
+        self.initial_prompt = initial_prompt
 
     def run(self):
         if not self.wav_path or not os.path.exists(self.wav_path):
             self.chunk_finished.emit(self.chunk_index, "")
             return
 
-        recognizer = sr.Recognizer()
         try:
-            with sr.AudioFile(self.wav_path) as source:
-                audio_data = recognizer.record(source)
+            # Try Whisper first (primary engine)
+            text = transcribe_with_whisper(self.wav_path, initial_prompt=self.initial_prompt)
+            
+            if text is None:
+                # Fallback to Google Web Speech API
+                try:
+                    text = transcribe_with_google(self.wav_path)
+                except Exception:
+                    text = ""
 
-            # Transcribe using Google's Web Speech API
-            text = recognizer.recognize_google(audio_data)
-            self.chunk_finished.emit(self.chunk_index, text.strip())
-        except sr.UnknownValueError:
-            self.chunk_finished.emit(self.chunk_index, "")
+            self.chunk_finished.emit(self.chunk_index, text.strip() if text else "")
         except Exception as e:
             self.chunk_error.emit(self.chunk_index, str(e))
         finally:
@@ -106,6 +205,8 @@ class ChunkTranscriberWorker(QThread):
             except Exception:
                 pass
 
+
+# ─── Streaming Transcriber Manager ──────────────────────────────────────
 
 class StreamingTranscriberManager(QObject):
     finished = Signal(str, str)  # Emits (formatted_raw, corrected_text)
@@ -120,9 +221,12 @@ class StreamingTranscriberManager(QObject):
         self.expected_final_index = None
         self.workers = []
         self.is_flushing = False
+        self._last_prompt = None  # Context passing: text from previous chunk
 
     def add_chunk(self, chunk_index, wav_path):
-        worker = ChunkTranscriberWorker(chunk_index, wav_path)
+        """Dispatch a background transcription worker for this audio chunk."""
+        # Pass the last completed chunk's text as initial_prompt for context
+        worker = ChunkTranscriberWorker(chunk_index, wav_path, initial_prompt=self._last_prompt)
         worker.chunk_finished.connect(self._on_chunk_finished)
         worker.chunk_error.connect(self._on_chunk_error)
         self.workers.append(worker)
@@ -139,6 +243,9 @@ class StreamingTranscriberManager(QObject):
 
     def _on_chunk_finished(self, chunk_index, text):
         self.partial_results[chunk_index] = text
+        # Update context for next chunk (streaming context passing)
+        if text:
+            self._last_prompt = text
         self._check_completion()
 
     def _on_chunk_error(self, chunk_index, error_msg):
@@ -169,6 +276,8 @@ class StreamingTranscriberManager(QObject):
             self.reset()
 
 
+# ─── Legacy Single-File Transcriber (backward compatibility) ─────────────
+
 class TranscriberThread(QThread):
     finished = Signal(str, str)  # Emits (raw_text, corrected_text)
     error = Signal(str)
@@ -182,35 +291,38 @@ class TranscriberThread(QThread):
             self.error.emit("Audio file not found")
             return
 
-        recognizer = sr.Recognizer()
         try:
-            with sr.AudioFile(self.wav_path) as source:
-                audio_data = recognizer.record(source)
-
-            # Transcribe using Google's Web Speech API (free, no API key needed)
-            raw_text = recognizer.recognize_google(audio_data)
+            # Try Whisper first
+            raw_text = transcribe_with_whisper(self.wav_path)
             
-            # Format raw text (apply voice commands, capitalize, and punctuate)
+            if raw_text is None:
+                # Fallback to Google Web Speech API
+                raw_text = transcribe_with_google(self.wav_path)
+            
+            # Format raw text
             formatted_raw = format_text(raw_text)
             
             # Apply learned corrections from dictionary
             corrected_text = database.apply_dictionary(formatted_raw)
             
             self.finished.emit(formatted_raw, corrected_text)
-        except sr.UnknownValueError:
-            self.error.emit("Speech could not be understood.")
-        except sr.RequestError as e:
-            self.error.emit(f"Transcription service error: {e}")
         except Exception as e:
-            self.error.emit(f"Transcription error: {str(e)}")
+            error_msg = str(e)
+            if "UnknownValueError" in error_msg or "could not understand" in error_msg.lower():
+                self.error.emit("Speech could not be understood.")
+            elif "RequestError" in error_msg:
+                self.error.emit(f"Transcription service error: {e}")
+            else:
+                self.error.emit(f"Transcription error: {error_msg}")
         finally:
-            # Clean up temporary audio file
             try:
                 if os.path.exists(self.wav_path):
                     os.remove(self.wav_path)
             except Exception:
                 pass
 
+
+# ─── Clipboard Correction Learner ────────────────────────────────────────
 
 class ClipboardCorrectionLearner(QObject):
     correction_learned = Signal(str, str)  # Emits (old_word, new_word)
@@ -279,14 +391,24 @@ class ClipboardCorrectionLearner(QObject):
                     RLEngine.process_reward(clean_w, 'accept')
 
 
+# ─── Text Injection — Atomic Clipboard Paste ─────────────────────────────
+
 def paste_text(text):
     """
-    Pastes text by copying it to the clipboard (supporting clipboard-based learning)
-    and directly typing it into the focused window using keyboard simulation.
+    Pastes text into the active window using atomic clipboard paste (Ctrl+V).
+    
+    Instead of slow character-by-character keyboard.write(), this:
+    1. Saves the user's current clipboard content
+    2. Sets clipboard to the transcribed text
+    3. Simulates Ctrl+V for instant paste
+    4. Restores the original clipboard content after a delay
     """
     clipboard = QApplication.clipboard()
     
-    # Copy text to clipboard so it's ready for clipboard-based correction learning
+    # Save original clipboard content for restoration
+    original_clipboard = clipboard.text()
+    
+    # Set transcribed text to clipboard
     clipboard.setText(text)
     
     # Release modifier keys virtually to prevent OS keyboard state conflicts
@@ -299,5 +421,12 @@ def paste_text(text):
     # Allow logical keys to release in the OS
     time.sleep(0.15)
     
-    # Directly simulate typing the text into the active cursor position
-    keyboard.write(text)
+    # Simulate Ctrl+V for instant atomic paste
+    keyboard.send('ctrl+v')
+    
+    # Wait for paste to complete, then restore original clipboard
+    time.sleep(0.25)
+    try:
+        clipboard.setText(original_clipboard)
+    except Exception:
+        pass

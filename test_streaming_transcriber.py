@@ -27,6 +27,11 @@ def test_streaming_manager():
     # 1. Test Text Formatting & Combining
     raw_chunk1 = "hello world"
     raw_chunk2 = "how are you today"
+    
+    # Mock whisper available to test the google fallback formatting
+    import transcriber
+    transcriber._whisper_available = False
+    
     combined = format_text(f"{raw_chunk1} {raw_chunk2}")
     print(f"[Streaming Test] Joined formatted text: '{combined}'")
     assert combined == "Hello world how are you today.", f"Unexpected formatting result: {combined}"

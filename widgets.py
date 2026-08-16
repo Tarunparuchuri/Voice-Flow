@@ -6,7 +6,8 @@ from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QIcon, QPixmap,
 from PySide6.QtWidgets import (QWidget, QMainWindow, QVBoxLayout, QHBoxLayout, QLabel, 
                              QPushButton, QTabWidget, QListWidget, QListWidgetItem, 
                              QLineEdit, QDialog, QMessageBox, QSlider, QFrame, 
-                             QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QApplication, QStackedWidget, QScrollArea)
+                             QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QApplication, QStackedWidget, QScrollArea, QComboBox)
+import sounddevice as sd
 
 import database
 from config import ORANGE, DARK_BG, DARK_CARD, DARK_TEXT, DARK_BORDER, LIGHT_BG, LIGHT_CARD, LIGHT_TEXT, LIGHT_BORDER, LOGO_PATH
@@ -1061,6 +1062,60 @@ class SettingsWindow(QMainWindow):
         
         layout.addWidget(theme_card)
         
+        # Card 1.5: Audio & Microphone Settings
+        audio_card = QFrame()
+        audio_card.setObjectName("settingGroupCard")
+        audio_card_layout = QVBoxLayout(audio_card)
+        audio_card_layout.setContentsMargins(18, 18, 18, 18)
+        audio_card_layout.setSpacing(16)
+        
+        audio_title = QLabel("🎙️ Audio & Transcription Settings")
+        audio_title.setFont(QFont("Segoe UI", 10.5, QFont.Bold))
+        audio_sub = QLabel("Select your microphone and configure the AI speech model.")
+        audio_sub.setObjectName("settingSubText")
+        audio_sub.setFont(QFont("Segoe UI", 8.5))
+        audio_card_layout.addWidget(audio_title)
+        audio_card_layout.addWidget(audio_sub)
+        
+        # Microphone selection
+        mic_layout = QHBoxLayout()
+        mic_lbl = QLabel("Microphone:")
+        mic_lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        self.mic_combo = QComboBox()
+        self.mic_combo.setMinimumWidth(250)
+        self.mic_combo.setStyleSheet("QComboBox { padding: 4px; border-radius: 4px; border: 1px solid #FF6600; }")
+        self._populate_audio_devices()
+        self.mic_combo.currentIndexChanged.connect(self.on_audio_device_changed)
+        
+        mic_layout.addWidget(mic_lbl)
+        mic_layout.addWidget(self.mic_combo)
+        mic_layout.addStretch()
+        audio_card_layout.addLayout(mic_layout)
+        
+        # Whisper model selection
+        model_layout = QHBoxLayout()
+        model_lbl = QLabel("Whisper Model:")
+        model_lbl.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(["tiny", "base", "small", "medium"])
+        self.model_combo.setMinimumWidth(150)
+        self.model_combo.setStyleSheet("QComboBox { padding: 4px; border-radius: 4px; border: 1px solid #FF6600; }")
+        
+        from config import WHISPER_MODEL
+        current_model = database.get_setting("whisper_model", WHISPER_MODEL)
+        index = self.model_combo.findText(current_model)
+        if index >= 0:
+            self.model_combo.setCurrentIndex(index)
+            
+        self.model_combo.currentTextChanged.connect(self.on_whisper_model_changed)
+        
+        model_layout.addWidget(model_lbl)
+        model_layout.addWidget(self.model_combo)
+        model_layout.addStretch()
+        audio_card_layout.addLayout(model_layout)
+        
+        layout.addWidget(audio_card)
+        
         # 3. Card 2: Floating Capsule Behavior & Interactive Simulator Dashboard
         capsule_card = QFrame()
         capsule_card.setObjectName("settingGroupCard")
@@ -1306,6 +1361,44 @@ class SettingsWindow(QMainWindow):
         database.save_setting("theme", new_theme)
         self.theme_btn.setText("🌙  Dark Mode" if new_theme == "dark" else "☀️  Light Mode")
         self.theme_changed.emit(new_theme)
+
+    def _populate_audio_devices(self):
+        self.mic_combo.clear()
+        self.mic_combo.addItem("System Default", userData="default")
+        try:
+            devices = sd.query_devices()
+            hostapis = sd.query_hostapis()
+            # MME is usually the default on Windows which is reliable
+            default_hostapi = sd.default.hostapi
+            
+            for i, device in enumerate(devices):
+                if device['max_input_channels'] > 0:
+                    api_name = hostapis[device['hostapi']]['name']
+                    name = f"{device['name']} ({api_name})"
+                    self.mic_combo.addItem(name, userData=str(i))
+                    
+            saved_device = database.get_setting("audio_device", "default")
+            if saved_device != "default":
+                index = self.mic_combo.findData(saved_device)
+                if index >= 0:
+                    self.mic_combo.setCurrentIndex(index)
+        except Exception as e:
+            print(f"Error querying audio devices: {e}")
+
+    def on_audio_device_changed(self, index):
+        device_id = self.mic_combo.itemData(index)
+        if device_id:
+            database.save_setting("audio_device", device_id)
+            print(f"Audio device changed to: {self.mic_combo.itemText(index)} ({device_id})")
+
+    def on_whisper_model_changed(self, new_model):
+        database.save_setting("whisper_model", new_model)
+        print(f"Whisper model changed to: {new_model}")
+        try:
+            import transcriber
+            transcriber.reload_whisper_model()
+        except Exception as e:
+            print(f"Could not trigger whisper model reload: {e}")
 
     def change_idle_opacity(self, value):
         opacity = value / 100.0

@@ -390,14 +390,15 @@ def apply_dictionary(text):
         new_words = []
         for w in words:
             clean_w = strip_punctuation(w)
-            if clean_w and any(c.isalpha() for c in clean_w) and len(clean_w) > 3:
+            # Only apply fuzzy correction if word > 3 chars and NOT in common English words
+            if clean_w and any(c.isalpha() for c in clean_w) and len(clean_w) > 3 and clean_w.lower() not in COMMON_WORDS:
                 lower_repls = [r.lower() for r in known_replacements]
                 if clean_w.lower() in lower_repls:
                     new_words.append(w)
                     continue
                     
-                # Find close matches from the user's vocabulary
-                matches = difflib.get_close_matches(clean_w.lower(), lower_repls, n=1, cutoff=0.82)
+                # Find close matches from the user's vocabulary with strict cutoff
+                matches = difflib.get_close_matches(clean_w.lower(), lower_repls, n=1, cutoff=0.90)
                 if matches:
                     matched_lower = matches[0]
                     original_cased = next(r for r in known_replacements if r.lower() == matched_lower)
