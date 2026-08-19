@@ -295,6 +295,7 @@ def learn_corrections(raw_text, corrected_text):
     """
     Reinforcement learning: Diffs the raw transcription against the corrected text
     to extract mappings, and adds them to the dictionary.
+    Only learns genuine word replacements — never capitalization-only changes.
     """
     # Clean double spaces and normalize
     raw_text = " ".join(raw_text.split())
@@ -310,7 +311,6 @@ def learn_corrections(raw_text, corrected_text):
     
     for tag, i1, i2, j1, j2 in opcodes:
         if tag == 'replace':
-            # Extract the raw phrase and what it was corrected to (always save phrase-level)
             raw_phrase = " ".join(raw_words[i1:i2])
             corrected_phrase = " ".join(corrected_words[j1:j2])
             
@@ -320,16 +320,23 @@ def learn_corrections(raw_text, corrected_text):
             clean_corr = strip_punctuation(corrected_phrase).strip()
             clean_corr = " ".join(clean_corr.split())
             
-            # Learn only if:
-            # 1. Both contain at least one letter (filters math symbols + digits)
-            # 2. Raw phrase is not in the set of common English words
+            # Skip if only difference is capitalization
+            if clean_raw == clean_corr.lower():
+                continue
+            
+            # Skip if raw phrase words are all common English words
+            raw_tokens = clean_raw.split()
+            if all(t in COMMON_WORDS for t in raw_tokens):
+                continue
+            
+            # Learn only if both contain letters and are genuinely different
             if clean_raw and clean_corr and clean_raw != clean_corr:
                 if any(c.isalpha() for c in clean_raw) and any(c.isalpha() for c in clean_corr):
                     if clean_raw not in COMMON_WORDS:
                         if add_dictionary_entry(clean_raw, clean_corr, learned=1):
                             learned_mappings.append((clean_raw, clean_corr))
             
-            # Also break down into word-by-word learning if lengths match
+            # Word-by-word learning if lengths match
             if (i2 - i1) > 1 and (i2 - i1) == (j2 - j1):
                 for k in range(i2 - i1):
                     raw_w = raw_words[i1 + k]
@@ -337,6 +344,10 @@ def learn_corrections(raw_text, corrected_text):
                     
                     clean_rw = strip_punctuation(raw_w).strip().lower()
                     clean_cw = strip_punctuation(corr_w).strip()
+                    
+                    # Skip capitalization-only changes
+                    if clean_rw == clean_cw.lower():
+                        continue
                     
                     if clean_rw and clean_cw and clean_rw != clean_cw:
                         if any(c.isalpha() for c in clean_rw) and any(c.isalpha() for c in clean_cw):
