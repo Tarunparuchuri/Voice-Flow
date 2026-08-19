@@ -124,13 +124,7 @@ def update_history_entry(entry_id, new_corrected_text):
     
     # Learn from the correction!
     learn_corrections(raw_text, new_corrected_text)
-    
-    # Save all unique words in the corrected text to the dictionary
-    words = new_corrected_text.split()
-    for w in words:
-        clean_w = strip_punctuation(w)
-        if clean_w and any(c.isalpha() for c in clean_w):
-            add_dictionary_entry(clean_w.lower(), clean_w, learned=1)
+            
             
     return True
 
