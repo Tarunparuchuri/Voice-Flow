@@ -269,9 +269,6 @@ class VoiceFlowApp(QObject):
         # Visual notification in the capsule widget
         self.capsule.set_state("success", f"Learned: {original} → {corrected}")
         QTimer.singleShot(3000, lambda: self.capsule.set_state("idle"))
-        
-        # Refresh widgets to display newly added dictionary correction rules
-        self.settings_window.refresh_dictionary()
 
     def exit_app(self):
         print("Shutting down Voice Flow...")

@@ -650,24 +650,18 @@ class SettingsWindow(QMainWindow):
         self.btn_history.setChecked(True)
         self.btn_history.setMinimumHeight(38)
         
-        self.btn_dict = QPushButton("   Dictionary")
-        self.btn_dict.setObjectName("sidebarBtn")
-        self.btn_dict.setCheckable(True)
-        self.btn_dict.setMinimumHeight(38)
-        
         self.btn_settings = QPushButton("   Settings")
         self.btn_settings.setObjectName("sidebarBtn")
         self.btn_settings.setCheckable(True)
         self.btn_settings.setMinimumHeight(38)
         
         # Button Group list
-        self.menu_buttons = [self.btn_history, self.btn_dict, self.btn_settings]
+        self.menu_buttons = [self.btn_history, self.btn_settings]
         for btn in self.menu_buttons:
             self.sidebar_layout.addWidget(btn)
             
         self.btn_history.clicked.connect(lambda: self.switch_page(0))
-        self.btn_dict.clicked.connect(lambda: self.switch_page(1))
-        self.btn_settings.clicked.connect(lambda: self.switch_page(2))
+        self.btn_settings.clicked.connect(lambda: self.switch_page(1))
         
         self.sidebar_layout.addStretch()
         
@@ -717,11 +711,9 @@ class SettingsWindow(QMainWindow):
         
         # Pages layouts
         self.init_history_tab()
-        self.init_dictionary_tab()
         self.init_settings_tab()
         
         self.view_stack.addWidget(self.history_tab)
-        self.view_stack.addWidget(self.dict_tab)
         self.view_stack.addWidget(self.settings_tab)
         
         self.window_layout.addWidget(self.content_container)
@@ -734,13 +726,10 @@ class SettingsWindow(QMainWindow):
         self.view_stack.setCurrentIndex(index)
         if index == 0:
             self.refresh_history()
-        elif index == 1:
-            self.refresh_dictionary()
 
     def showEvent(self, event):
         super().showEvent(event)
         self.refresh_history()
-        self.refresh_dictionary()
 
     def toggle_maximize(self):
         if self.isMaximized():
@@ -881,7 +870,6 @@ class SettingsWindow(QMainWindow):
                 print(f"[Voice Flow] Deleting history ID={entry_id} from database...")
                 database.delete_history_entry(entry_id)
                 self.refresh_history()
-                self.refresh_dictionary()
             else:
                 print("[Voice Flow] Text is empty, skipping save.")
 
@@ -904,7 +892,6 @@ class SettingsWindow(QMainWindow):
         
         # Refresh UI
         self.refresh_history()
-        self.refresh_dictionary()
 
     def clear_history(self):
         reply = QMessageBox.question(self, "Clear History", "Are you sure you want to clear all history?",
@@ -913,96 +900,7 @@ class SettingsWindow(QMainWindow):
             database.clear_history()
             self.refresh_history()
 
-    def init_dictionary_tab(self):
-        self.dict_tab = QWidget()
-        layout = QVBoxLayout(self.dict_tab)
-        
-        # Word Adding section (Single "Word" text box next to "Add Word")
-        add_layout = QHBoxLayout()
-        self.word_input = QLineEdit()
-        self.word_input.setPlaceholderText("Word...")
-        
-        add_btn = QPushButton("Add Word")
-        add_btn.clicked.connect(self.add_word)
-        
-        add_layout.addWidget(self.word_input)
-        add_layout.addWidget(add_btn)
-        layout.addLayout(add_layout)
-        
-        # Learned Dictionary List
-        self.dict_list = QListWidget()
-        self.dict_list.setSelectionMode(QListWidget.NoSelection)
-        self.dict_list.setSpacing(4)
-        layout.addWidget(self.dict_list)
-        
-        # Handled by QStackedWidget
-        
-        self.refresh_dictionary()
 
-    def refresh_dictionary(self):
-        self.dict_list.clear()
-        entries = database.get_dictionary()
-        from rl_engine import RLEngine
-        
-        for e in entries:
-            item = QListWidgetItem(self.dict_list)
-            
-            card = QFrame()
-            card.setObjectName("dictCard")
-            card_layout = QHBoxLayout(card)
-            card_layout.setContentsMargins(10, 8, 10, 8)
-            card_layout.setSpacing(10)
-            
-            # Words representation (Clean rendering: hides phrase -> replacement mapping if they match case-insensitively)
-            if e['phrase'] == e['replacement'].lower():
-                map_lbl = QLabel(f"\"{e['replacement']}\"")
-            else:
-                map_lbl = QLabel(f"\"{e['phrase']}\"  →  \"{e['replacement']}\"")
-            map_lbl.setObjectName("dictMappingText")
-            card_layout.addWidget(map_lbl)
-            card_layout.addStretch()
-            
-            # RL Q-Value Confidence Badge
-            q_val = e.get("q_value", 1.0)
-            badge_text, badge_color = RLEngine.get_confidence_label(q_val)
-            q_badge = QLabel(badge_text)
-            q_badge.setStyleSheet(f"background-color: rgba(0, 0, 0, 0.25); color: {badge_color}; border: 1px solid {badge_color}; border-radius: 8px; padding: 3px 10px; font-weight: bold; font-size: 8pt;")
-            card_layout.addWidget(q_badge)
-            
-            # Label marking how it was added
-            badge = QLabel("Learned" if e["learned"] else "Manual")
-            badge.setObjectName("learnedBadge" if e["learned"] else "manualBadge")
-            card_layout.addWidget(badge)
-            
-            # Delete button
-            del_btn = QPushButton("Delete")
-            del_btn.setObjectName("dictDeleteBtn")
-            del_btn.clicked.connect(self.make_delete_handler(e["phrase"]))
-            card_layout.addWidget(del_btn)
-            
-            item.setSizeHint(card.sizeHint())
-            self.dict_list.addItem(item)
-            self.dict_list.setItemWidget(item, card)
-
-    def make_delete_handler(self, phrase):
-        return lambda: self.delete_word(phrase)
-
-    def add_word(self):
-        word = self.word_input.text().strip()
-        
-        if word:
-            # Save word as a self-mapping custom vocabulary word
-            if database.add_dictionary_entry(word.lower(), word, learned=0):
-                self.word_input.clear()
-                self.refresh_dictionary()
-            else:
-                QMessageBox.warning(self, "Invalid Entry", "Could not add word. Make sure it is unique.")
-        else:
-            QMessageBox.warning(self, "Empty Field", "Please type a word.")
-
-    def delete_word(self, phrase):
-        database.delete_dictionary_entry(phrase)
-        self.refresh_dictionary()
 
     def init_settings_tab(self):
         self.settings_tab = QWidget()
@@ -1849,4 +1747,3 @@ class SettingsWindow(QMainWindow):
         
         # Trigger update of child listings to refresh themes of list items
         self.refresh_history()
-        self.refresh_dictionary()
